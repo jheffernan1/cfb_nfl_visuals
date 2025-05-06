@@ -1,0 +1,252 @@
+---
+title: "cfb_qb_wr_connections"
+author: "Heff"
+date: "2025-04-22"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(cfbfastR)
+library(cfbplotR)
+library(ggforce)
+library(showtext)
+library(grid)
+library(png)
+
+###############################################################################
+```
+
+```{r}
+Sys.setenv(CFBD_API_KEY = "VXuXNSm/RT0sJG6nbSnTTNZYHJDjASntcIYw6WpA+Ms+j/lkU7T9/d/i2GIKKVaj")
+```
+
+```{r}
+add_logo <- function(plot_path, logo_path, logo_position, logo_scale = 10) {
+  
+  if (!logo_position %in% c("top right", "top left", "bottom right",
+                            "bottom left")) {
+    stop("Error Message: Uh oh! Logo Position not recognized\n  Try: logo_positon = 'top left', 'top right', 'bottom left', or 'bottom right'")
+    
+  }
+  
+  # Read in raw images.
+  plot <- magick::image_read(plot_path)
+  logo_raw <- magick::image_read(logo_path)
+  
+  # Get dimensions of plot for scaling.
+  plot_height <- magick::image_info(plot)$height
+  plot_width <- magick::image_info(plot)$width
+  
+  # Default scale to 1/10th width of plot.
+  # Can change with logo_scale.
+  logo <- magick::image_scale(logo_raw, as.character(plot_width / logo_scale))
+  
+  # Get width of logo.
+  logo_width <- magick::image_info(logo)$width
+  logo_height <- magick::image_info(logo)$height
+  
+  # Set position of logo.
+  # Position starts at top left (0, 0).
+  # Using 0.01 for 1% - aesthetic padding.
+  
+  if (logo_position == "top right") {
+    x_pos = plot_width - logo_width - 0.01 * plot_width
+    y_pos = 0.01 * plot_height
+  } else if (logo_position == "top left") {
+    x_pos = 0.01 * plot_width
+    y_pos = 0.01 * plot_height
+  } else if (logo_position == "bottom right") {
+    x_pos = plot_width - logo_width - 0.01 * plot_width
+    y_pos = plot_height - logo_height - 0.01 * plot_height
+  } else if (logo_position == "bottom left") {
+    x_pos = 0.01 * plot_width
+    y_pos = plot_height - logo_height - 0.01 * plot_height
+  }
+  
+  # Compose the actual overlay.
+  magick::image_composite(plot, logo, offset = paste0("+", x_pos, "+", y_pos))
+  
+}
+
+###############################################################################
+```
+
+```{r}
+team_info <- cfbd_team_info(only_fbs = TRUE) %>%
+  select(school, conference, color) %>%
+  rename(team = school)
+
+p5 <- c("ACC", "Big 12", "Big Ten", "Pac-12", "SEC")
+g5 <- c("American Athletic", "Conference USA", "FBS Independents",
+        "Mid-American", "Mountain West", "Sun Belt")
+
+pbp <- load_cfb_pbp(seasons = 2022)
+
+```
+
+```{r}
+pbp_p <- pbp %>%
+  filter(
+    pass == 1,
+    !is.na(EPA),
+    is.na(penalty_detail),
+    pos_team %in% team_info$team
+  )
+
+df <- pbp_p %>%
+  filter(!is.na(passer_player_name)) %>%
+  group_by(
+    passer   = passer_player_name,
+    receiver = receiver_player_name,
+    team     = pos_team
+  ) %>%
+  summarise(
+    comp = sum(completion == 1),
+    epa  = sum(EPA),
+    .groups = "drop"
+  ) %>%
+  left_join(team_info, by = c("team" = "team")) %>%
+  filter(comp >= 35) %>%
+  mutate(
+    text_label = paste0(passer, " to ", receiver, " (", comp, ")")
+  )
+
+p5_df <- df %>%
+  filter(conference %in% p5) %>%
+  slice_head(n = 15) %>%
+  arrange(epa) %>%
+  mutate(y_label = row_number())
+
+g5_df <- df %>%
+  filter(conference %in% g5) %>%
+  slice_head(n = 15) %>%
+  arrange(epa) %>%
+  mutate(y_label = row_number())
+
+p5_df$y_label <- factor(p5_df$y_label)
+g5_df$y_label <- factor(g5_df$y_label)
+```
+
+```{r}
+library(ggplot2)
+library(ggforce)
+library(cfbplotR)
+library(showtext)
+library(cowplot)
+
+font_add_google("Fjalla One","Fjalla One")
+showtext_auto(); showtext_opts(dpi=300)
+
+# compute a dynamic xmax
+xmax <- max(g5_df$epa) + 5
+
+g5_base <- ggplot(g5_df,
+                  aes(x=0, xend=epa,
+                      y=y_label, yend=y_label)) +
+  theme_minimal(base_family="Fjalla One") +
+  theme(
+    plot.background    = element_rect(fill="#F0F8FF", color=NA),
+    panel.background   = element_rect(fill="#F0F8FF", color=NA),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.title.y       = element_blank(),
+    axis.text.y        = element_blank(),
+    axis.ticks.y       = element_blank(),
+    plot.margin        = margin(1,1,3,1,"lines")
+  ) +
+  labs(
+    title    = "Top Quarterback/Wide Receiver Connections in CFB",
+    subtitle = "Season 2022 | Group of Five + Independents | Top 15 | 35+ connections (brackets)",
+    x        = "Total EPA",
+    caption  = "Data: cfbfastR & CollegeFootballData.com | Plot: @cover2figuRes"
+  ) +
+  scale_x_continuous(
+    limits = c(0, NA),      # left bound fixed, right bound auto
+    breaks = seq(0, xmax, 10),
+    expand = expansion(add = c(0,0))
+  ) +
+  geom_link(aes(colour = color),
+            alpha = 0.8, size = 9, n = 500, show.legend = FALSE) +
+  scale_colour_identity() +
+  geom_vline(xintercept = 0) +
+  geom_cfb_logos(aes(x = epa, y = y_label, team = team),
+                 width = 0.04) +
+  geom_text(aes(x = epa - 2, label = text_label),
+            colour  = "white",
+            size    = 3.8,
+            hjust   = 1,
+            family  = "Fjalla One")
+
+g5_final <- ggdraw(g5_base) +
+  draw_image("Cover2.png", x=0, y=0, h=0.1, vjust=0) +
+  draw_image("NCAA.png",   x=0, y=1, h=0.1, vjust=1)
+
+ggsave("cfb_qb_wr_pairs_g5.png",
+       g5_final,
+       width  = 14,
+       height = 8,
+       dpi    = 300)
+```
+
+```{r}
+library(ggplot2)
+library(ggforce)
+library(cfbplotR)
+library(showtext)
+library(cowplot)
+
+font_add_google("Fjalla One","Fjalla One")
+showtext_auto(); showtext_opts(dpi=300)
+
+# compute a dynamic xmax
+xmax <- max(p5_df$epa) + 5
+
+p5_base <- ggplot(p5_df,
+                  aes(x=0, xend=epa,
+                      y=y_label, yend=y_label)) +
+  theme_minimal(base_family="Fjalla One") +
+  theme(
+    plot.background    = element_rect(fill="#F0F8FF", color=NA),
+    panel.background   = element_rect(fill="#F0F8FF", color=NA),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.title.y       = element_blank(),
+    axis.text.y        = element_blank(),
+    axis.ticks.y       = element_blank(),
+    plot.margin        = margin(1,1,3,1,"lines")
+  ) +
+  labs(
+    title    = "Top Quarterback/Wide Receiver Connections in CFB",
+    subtitle = "Season 2022 | Group of Five + Independents | Top 15 | 35+ connections (brackets)",
+    x        = "Total EPA",
+    caption  = "Data: cfbfastR & CollegeFootballData.com | Plot: @cover2figuRes"
+  ) +
+  scale_x_continuous(
+    limits = c(0, NA),      # left bound fixed, right bound auto
+    breaks = seq(0, xmax, 10),
+    expand = expansion(add = c(0,0))
+  ) +
+  geom_link(aes(colour = color),
+            alpha = 0.8, size = 9, n = 500, show.legend = FALSE) +
+  scale_colour_identity() +
+  geom_vline(xintercept = 0) +
+  geom_cfb_logos(aes(x = epa, y = y_label, team = team),
+                 width = 0.04) +
+  geom_text(aes(x = epa - 2, label = text_label),
+            colour  = "white",
+            size    = 3.8,
+            hjust   = 1,
+            family  = "Fjalla One")
+
+p5_final <- ggdraw(p5_base) +
+  draw_image("Cover2.png", x=0, y=0, h=0.1, vjust=0) +
+  draw_image("NCAA.png",   x=0, y=1, h=0.1, vjust=1)
+
+ggsave("cfb_qb_wr_pairs_p5.png",
+       g5_final,
+       width  = 14,
+       height = 8,
+       dpi    = 300)
+```
+
